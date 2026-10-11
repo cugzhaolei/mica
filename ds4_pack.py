@@ -37,24 +37,55 @@ ROLE_MAP = {
     "nextn.*":               "DSpark/MTP draft module -> --mtp rt equivalent (P3)",
 }
 
+def load_shards(gguf_path):
+    """Unsloth-style split GGUF: shard 001 carries ALL metadata (n_tensors=0),
+    later shards carry the tensor tables. Merge them into one view.
+    (Verified on UD-IQ2_XXS: 001 -> 72 kv / 0 tensors, 002 -> 728, 003 -> 600.)
+    """
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[0]))
+    from gguf_reader import GGUFFile
+    p = pathlib.Path(gguf_path)
+    import re
+    base = re.sub(r"-\d+-of-\d+$", "", p.stem)
+    siblings = sorted(p.parent.glob(base + "*.gguf"))
+    if len(siblings) <= 1:
+        return GGUFFile(str(p))
+    merged = None
+    for s in siblings:
+        g = GGUFFile(str(s))
+        if merged is None:
+            merged = g
+        else:
+            merged.metadata.update({k: v for k, v in g.metadata.items() if k not in merged.metadata})
+            merged.tensors.extend(g.tensors)
+    return merged
+
+
 def census(gguf_path, dry=True):
     """Tensor census: count experts vs dense, verify suffix compatibility."""
-    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[0]))
     try:
-        from gguf_reader import GGUFFile  # vendored in Strata tools/
+        g = load_shards(gguf_path)
     except ImportError:
-        print("run from /mnt/windows/Strata/tools (needs gguf_reader.py)"); return 1
-    g = GGUFFile(str(gguf_path))
+        print("run from repo root (needs gguf_reader.py)"); return 1
     exps = [t for t in g.tensors if t.name.startswith("blk.") and t.name.endswith("_exps.weight")]
     dense = [t for t in g.tensors if t not in exps]
-    print(f"tensors: {len(g.tensors)}  expert-fused: {len(exps)}  dense: {len(dense)}")
+    arch = g.metadata.get("general.architecture", "?")
+    print(f"arch: {arch}  shards-merged tensors: {len(g.tensors)}  expert-fused: {len(exps)}  dense: {len(dense)}")
     for t in exps[:3]:
         print("  expert:", t.name, t.type_name, t.shape)
     need = {"ffn_gate_exps.weight", "ffn_up_exps.weight", "ffn_down_exps.weight"}
-    seen = {t.name.split(".", 2)[-1] if t.name.count(".") >= 2 else t.name for t in exps}
-    missing = need - seen
+    suffixes = {".".join(t.name.split(".")[2:]) for t in exps if t.name.count(".") >= 3}
+    missing = need - suffixes
     if missing:
-        print("!! unexpected expert naming, missing:", missing); return 2
+        print("!! unexpected expert naming, missing:", sorted(missing))
+        print("   saw suffixes:", sorted(suffixes)[:12])
+        return 2
+    # per-layer expert census: rows per fused tensor must equal n_experts
+    n_exp = g.metadata.get(f"{arch}.expert_count") or g.metadata.get(f"{arch}.n_experts")
+    first = next(t for t in exps if "ffn_gate_exps" in t.name)
+    print(f"arch expert_count={n_exp}  fused tensor rows={first.shape}  type={first.type_name}")
+    n_layers = g.metadata.get(f"{arch}.block_count")
+    print(f"block_count={n_layers}  expected fused tensors = 3*{n_layers} = {3*(n_layers or 0)}  got {len(exps)}")
     print("suffix check OK: DEEPSEEK4 *_exps.weight matches iq_pack is_expert()")
     return 0
 
