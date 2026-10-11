@@ -77,7 +77,7 @@ llama.cpp 为什么做不到：张量放置是静态的，GPU1 只剩 6.5G 只�
 
 ## 代码与复现
 
-仓库：github.com/（见 iot-pub.top 文章页链接）
+仓库：https://github.com/cugzhaolei/mica
 复现命令：`llama-server -m DeepSeek-V4-Flash-UD-IQ2_XXS.gguf -ngl 99 -ncmoe 99 -cram 6 -b 2048 -ub 512 -fa 0`
 注意：`-fa 1` 在 Turing 上对 decode 有害；8080 端口易与现有服务冲突。
 
